@@ -1,28 +1,17 @@
 import Lean
+import DerivingSuchThat
 open Lean Elab Command Term Meta
-
-syntax (name := instantiate) "instantiate" "?" ident ":=" term : tactic
-
-@[tactic_elab instantiate]
-def instantateM : Tactic.TacticM Unit := fun ctx => do
-  return ()
 
 
 section manual
 
 variable (n m k: Nat)
 
-def p :=  k * (n + m)
+derive p such that (k * n) + (k * m) = p as h := by
+   instantiate ?p := k * (n + m)
+   simp [p, Nat.mul_add]
 
-
-def is_correct: (k * n) + (k * m) = p n m k := by
-  simp_all [p, Nat.mul_add]
-  
-def is_correct_synth: (k * n) + (k * m) = ?mp := by
-  instantiate ?mp := p n m k
-  
-  simp_all [p, Nat.mul_add]
-
+#eval (p 1 2 3)
 
 end manual
 
