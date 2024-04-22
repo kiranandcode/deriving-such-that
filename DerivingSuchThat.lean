@@ -27,14 +27,6 @@ elab "add_goal" "?" hvar:ident ts:proofs : tactic =>
    | _ => throwErrorAt ts "unsupported syntax"
 
 
-syntax "instantiate" "?" ident ":=" term : tactic
-
-elab_rules : tactic
-| `(tactic| instantiate ? $hvar:ident := $t:term) => do
-   let Option.some mvar <- findMVarByName hvar.getId | throwErrorAt hvar "{hvar.getId} does not match to any known metavariable"
-   mvar.assign (<- elabTerm t none)
-   return ()
-
 syntax (name := derive_such_that) "derive " ident " such that " term (" as " ident)? " := " proofs : command
 
 @[command_elab derive_such_that]
