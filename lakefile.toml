@@ -1,0 +1,14 @@
+name = "derive_such_that"
+defaultTargets = ["DerivingSuchThat", "Tests"]
+
+[leanOptions]
+pp.unicode.fun = true
+pp.proofs.withType = false
+
+[[lean_lib]]
+name = "DerivingSuchThat"
+
+[[lean_lib]]
+name = "Tests"
+globs = ["Tests.+"]
+leanOptions = {linter.unusedVariables = false}
