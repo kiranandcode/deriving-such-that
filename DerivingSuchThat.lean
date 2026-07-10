@@ -27,12 +27,12 @@ elab "add_goal" "?" hvar:ident ts:proofs : tactic =>
    | _ => throwErrorAt ts "unsupported syntax"
 
 
-syntax (name := derive_such_that) "derive " ident " suchThat " term (" as " ident)? " := " proofs : command
+syntax (name := derive_such_that) "derive " ident " such" " that " term (" as " ident)? " := " proofs : command
 
 @[command_elab derive_such_that]
 def deriveSuchThat : CommandElab := fun stx => do
    match stx with
-   | `(command| derive $id:ident suchThat $prop:term := $proof:proofs) =>
+   | `(command| derive $id:ident such that $prop:term := $proof:proofs) =>
      elabCommand <|
         <- `(def $id := ?$id
              where goal : True :=
@@ -40,7 +40,7 @@ def deriveSuchThat : CommandElab := fun stx => do
                  let goal : $prop := by
                    add_goal ?$id $proof
                  True.intro)
-   | `(command| derive $id:ident suchThat $prop:term as $propName:ident := $proof:proofs ) =>
+   | `(command| derive $id:ident such that $prop:term as $propName:ident := $proof:proofs ) =>
      let result <- mkFreshIdent id
      let bindings <- runTermElabM fun xs => do
           xs.mapM fun v => liftMetaM (getFvarUserName v)
