@@ -14,6 +14,6 @@ lean_lib DerivingSuchThat where
 
 @[default_target]
 lean_lib Tests {
-  globs := #[.submodules "Tests"]
+  globs := #[.submodules `Tests]
   leanOptions := #[⟨`linter.unusedVariables, false⟩]
 }
