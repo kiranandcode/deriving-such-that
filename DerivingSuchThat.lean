@@ -3,55 +3,70 @@ import DerivingSuchThat.Utils
 import DerivingSuchThat.ProgramAndProof
 open Lean Elab Command Term Meta
 
+/-!
+# `derive … such that …`
+
+`derive x such that P x := by tac` synthesises a term `x` together with a proof
+of `P x`, then emits both as real definitions: `def x` (and, with `as h`,
+`def h : P x`).  In-scope section `variable`s are abstracted into both.
+
+The proof of `P x` is elaborated *at the goal type* with `x` an open
+metavariable, so:
+
+  * a proof that pins `x` by unification — an `apply`/`exact`/`show`/`rfl` chain
+    — fills it automatically (this is the synthesis mode); and
+  * the witness is written back into `def x` (the earlier implementation left it
+    unassigned, so extraction silently failed for unification-synthesised
+    witnesses).
+-/
+
 declare_syntax_cat proofs
-syntax "by" tacticSeq : proofs
+syntax "by " tacticSeq : proofs
 syntax "by" : proofs
 syntax term : proofs
 
-elab "add_goal" "?" hvar:ident ts:proofs : tactic =>
-   match ts with
-   | `(proofs| by) => do
-      let Option.some mvar <- findMVarByName hvar.getId | throwErrorAt hvar "{hvar.getId} does not match to any known metavariable"
-      Tactic.appendGoals [mvar]
-      Tactic.withMainContext $ Tactic.closeUsingOrAdmit $ Tactic.evalTactic (<- `(tactic| skip))
-      return ()
-   | `(proofs| by $ts:tacticSeq) => do
-      let Option.some mvar <- findMVarByName hvar.getId | throwErrorAt hvar "{hvar.getId} does not match to any known metavariable"
-      Tactic.appendGoals [mvar]
-      Tactic.withMainContext do Tactic.evalTactic ts
-      return ()
-   | `(proofs| $stx:term) => do
-      let Option.some mvar <- findMVarByName hvar.getId | throwErrorAt hvar "{hvar.getId} does not match to any known metavariable"
-      Tactic.appendGoals [mvar]
-      Tactic.evalTactic (<- `(tactic| exact $stx))
-   | _ => throwErrorAt ts "unsupported syntax"
+private def proofToTerm : TSyntax `proofs → TermElabM (TSyntax `term)
+  | `(proofs| by $ts:tacticSeq) => `(by $ts:tacticSeq)
+  | `(proofs| by)               => `(by skip)
+  | `(proofs| $t:term)          => pure t
+  | _                           => throwError "derive: unsupported proof syntax"
 
-
-syntax (name := derive_such_that) "derive " ident " such" " that " term (" as " ident)? " := " proofs : command
+syntax (name := derive_such_that)
+  "derive " ident " such" " that " term (" as " ident)? " := " proofs : command
 
 @[command_elab derive_such_that]
 def deriveSuchThat : CommandElab := fun stx => do
-   match stx with
-   | `(command| derive $id:ident such that $prop:term := $proof:proofs) =>
-     elabCommand <|
-        <- `(def $id := ?$id
-             where goal : True :=
-                 let $id := ?$id
-                 let goal : $prop := by
-                   add_goal ?$id $proof
-                 True.intro)
-   | `(command| derive $id:ident such that $prop:term as $propName:ident := $proof:proofs ) =>
-     let result <- mkFreshIdent id
-     let bindings <- runTermElabM fun xs => do
-          xs.mapM fun v => liftMetaM (getFvarUserName v)
-     let original_id := id
-     elabCommand <|
-        <- `(private def $result :=
-               let $id := ?$id
-               let goal : $prop := by
-                    skip
-                    add_goal ?$original_id $proof
-               ProgramAndProof.intro $id goal
-             def $id := ProgramAndProof.program ($result $bindings*)
-             def $propName := ProgramAndProof.proof ($result $bindings*))
-   | _ => throwErrorAt stx "Invalid syntax for derive such that"
+  match stx with
+  | `(command| derive $id:ident such that $prop:term $[as $pn?:ident]? := $pf:proofs) =>
+    -- `runTermElabM` brings section `variable`s into scope and hands them back
+    -- as `fvars`, which we abstract into the emitted definitions.
+    Command.runTermElabM fun fvars => do
+      -- `fun x => P x`  gives the witness type `T` from `T → Prop`.
+      let pred ← Term.elabTerm (← `(fun $id:ident => $prop)) none
+      Term.synthesizeSyntheticMVarsNoPostponing
+      let pred ← instantiateMVars pred
+      let witnessType ← match ← whnf (← inferType pred) with
+        | .forallE _ t _ _ => pure t
+        | _ => throwError "derive: `{prop}` is not a predicate in `{id}`"
+      -- Single witness metavariable; the proof, elaborated at the goal type,
+      -- assigns it (by unification / `show` / `exact`).
+      let witnessMVar ← mkFreshExprMVar witnessType (userName := id.getId)
+      let goalType ← instantiateMVars (pred.beta #[witnessMVar])
+      let proof ← Term.elabTermEnsuringType (← proofToTerm pf) goalType
+      Term.synthesizeSyntheticMVarsNoPostponing
+      let proof ← instantiateMVars proof
+      let witness ← instantiateMVars witnessMVar
+      if witness.hasExprMVar then
+        throwError "derive: witness for `{id}` underdetermined:{indentExpr witness}"
+      -- Emit `def id := witness` and (with `as h`) `def h : P id := proof`,
+      -- abstracting the section variables.
+      let mkDef (name : Name) (type value : Expr) : MetaM Unit := do
+        let value ← mkLambdaFVars fvars value
+        let type  ← mkForallFVars fvars type
+        addDecl <| .defnDecl {
+          name, levelParams := [], type, value,
+          hints := .opaque, safety := .safe, all := [name] }
+      mkDef id.getId (← instantiateMVars witnessType) witness
+      if let some pn := pn? then
+        mkDef pn.getId (← instantiateMVars goalType) proof
+  | _ => throwErrorAt stx "Invalid syntax for derive such that"
