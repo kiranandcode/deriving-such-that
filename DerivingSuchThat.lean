@@ -52,21 +52,32 @@ def deriveSuchThat : CommandElab := fun stx => do
       -- assigns it (by unification / `show` / `exact`).
       let witnessMVar ← mkFreshExprMVar witnessType (userName := id.getId)
       let goalType ← instantiateMVars (pred.beta #[witnessMVar])
-      let proof ← Term.elabTermEnsuringType (← proofToTerm pf) goalType
+      -- `withSynthesize` runs the full synthetic-mvar pass the proof needs — in
+      -- particular, holes like `netk := fun _ => _` in an `apply` chain are only
+      -- resolved by this final pass, not by `elabTermEnsuringType` alone.
+      let proof ← Term.withSynthesize <|
+        Term.elabTermEnsuringType (← proofToTerm pf) goalType
       Term.synthesizeSyntheticMVarsNoPostponing
       let proof ← instantiateMVars proof
       let witness ← instantiateMVars witnessMVar
       if witness.hasExprMVar then
         throwError "derive: witness for `{id}` underdetermined:{indentExpr witness}"
       -- Emit `def id := witness` and (with `as h`) `def h : P id := proof`,
-      -- abstracting the section variables.
-      let mkDef (name : Name) (type value : Expr) : MetaM Unit := do
-        let value ← mkLambdaFVars fvars value
-        let type  ← mkForallFVars fvars type
+      -- abstracting the section variables.  Abstracting a typed section variable
+      -- (e.g. `G : Type`) can leave an under-constrained universe metavariable
+      -- (which `instantiateMVars`/`hasExprMVar` ignore); `levelMVarToParam`
+      -- generalises those into universe parameters so the declaration is
+      -- kernel-valid.
+      let mkDef (name : Name) (type value : Expr) : TermElabM Unit := do
+        let value ← Term.levelMVarToParam (← instantiateMVars (← mkLambdaFVars fvars value))
+        let type  ← Term.levelMVarToParam (← instantiateMVars (← mkForallFVars fvars type))
+        let params := (Lean.collectLevelParams (Lean.collectLevelParams {} value) type).params
         addDecl <| .defnDecl {
-          name, levelParams := [], type, value,
+          name, levelParams := params.toList, type, value,
           hints := .opaque, safety := .safe, all := [name] }
-      mkDef id.getId (← instantiateMVars witnessType) witness
+      -- Declare under the current namespace (not the root).
+      let ns ← getCurrNamespace
+      mkDef (ns ++ id.getId) (← instantiateMVars witnessType) witness
       if let some pn := pn? then
-        mkDef pn.getId (← instantiateMVars goalType) proof
+        mkDef (ns ++ pn.getId) (← instantiateMVars goalType) proof
   | _ => throwErrorAt stx "Invalid syntax for derive such that"
